@@ -57,6 +57,9 @@ inline constinit struct ExEdit092 {
 	int32_t*	layer_size;				// 0x0a3e20
 	int32_t*	midpt_marker_size;		// 0x0a3e24
 
+	SIZE*		timeline_size;			// 0x1a52fc, excludes right vertical scroll bar.
+	decltype(AviUtl::FilterPlugin::func_WndProc) func_wndproc;
+
 private:
 	void init_pointers()
 	{
@@ -68,6 +71,8 @@ private:
 		pick_addr(midpt_mk_sz_preset,		0x0a3e14);
 		pick_addr(layer_size,				0x0a3e20);
 		pick_addr(midpt_marker_size,		0x0a3e24);
+
+		pick_addr(timeline_size,			0x1a52fc);
 	}
 } exedit;
 
@@ -284,6 +289,8 @@ static constinit struct Settings {
 			constexpr int32_t min = -1, max = +1;
 			return std::clamp(wheel, min, max);
 		}
+
+		int8_t wheel_on_names = 0;
 	} behavior;
 
 	// helper functions for variants of scales.
@@ -337,6 +344,7 @@ static constinit struct Settings {
 		load_bool(behavior., hide_cursor, "behavior");
 		load_int(behavior., delay_ms,	"behavior", behavior.coerce_delay);
 		load_int(behavior., wheel,		"behavior", behavior.coerce_wheel);
+		load_int(behavior., wheel_on_names,	"behavior", behavior.coerce_wheel);
 
 		// make sure that size_min < size_max.
 		if (behavior.size_min >= behavior.size_max) {
@@ -748,6 +756,44 @@ namespace menu_commands
 
 
 ////////////////////////////////
+// タイムラインウィンドウのフック．
+////////////////////////////////
+BOOL exedit_wndproc(HWND hwnd, UINT message, WPARAM wparam, LPARAM lparam, AviUtl::EditHandle* editp, AviUtl::FilterPlugin* fp)
+{
+	// change the layer size on ctrl+wheel.
+	switch (message) {
+	case WM_MOUSEWHEEL:
+	{
+		// ctrl must be pressed and others must not.
+		if ((wparam & 0xffff) != MK_CONTROL) break;
+
+		// calculate the delta.
+		auto const amount = static_cast<int16_t>(wparam >> 16);
+		if (amount == 0) break;
+
+		auto const delta = (amount > 0 ? -1 : +1) * settings.behavior.wheel_on_names;
+		//if (delta == 0) break;
+
+		// mouse pointer must be on the layer names.
+		POINT pt{ static_cast<int16_t>(lparam & 0xffff), static_cast<int16_t>(lparam >> 16) };
+		::ScreenToClient(hwnd, &pt);
+
+		constexpr int timeline_left = 64, timeline_top = 42;
+		if (!(0 <= pt.x && pt.x < timeline_left &&
+			timeline_top <= pt.y && pt.y < exedit.timeline_size->cy)) break;
+
+		// then resize the layer.
+		if (gui_data.push(std::clamp<int32_t>(gui_data.gui_value() + delta,
+			settings.behavior.size_min, settings.behavior.size_max), 0))
+			draw(); // redraw if necessary.
+		return FALSE;
+	}
+	}
+	return exedit.func_wndproc(hwnd, message, wparam, lparam, editp, fp);
+}
+
+
+////////////////////////////////
 // AviUtlに渡す関数の定義．
 ////////////////////////////////
 std::remove_pointer_t<decltype(AviUtl::FilterPlugin::func_WndProc)> func_WndProc;
@@ -790,6 +836,10 @@ BOOL func_WndProc(HWND hwnd, UINT message, WPARAM wparam, LPARAM lparam, AviUtl:
 		// first synchronization.
 		gui_data.pull();
 		tooltip.init();
+
+		// タイムラインのメッセージハンドラをこのタイミングでフック (Layer Wheel 2 より後出し).
+		if (settings.behavior.wheel_on_names != 0)
+			exedit.func_wndproc = std::exchange(exedit.fp->func_WndProc, &exedit_wndproc);
 		break;
 	}
 	case AUM::Exit:
@@ -976,7 +1026,7 @@ BOOL WINAPI DllMain(HINSTANCE hinst, DWORD fdwReason, LPVOID lpvReserved)
 // 看板．
 ////////////////////////////////
 #define PLUGIN_NAME		"可変幅レイヤー"
-#define PLUGIN_VERSION	"v1.00"
+#define PLUGIN_VERSION	"v1.10-beta1"
 #define PLUGIN_AUTHOR	"sigma-axis"
 #define PLUGIN_INFO_FMT(name, ver, author)	(name##" "##ver##" by "##author)
 #define PLUGIN_INFO		PLUGIN_INFO_FMT(PLUGIN_NAME, PLUGIN_VERSION, PLUGIN_AUTHOR)
